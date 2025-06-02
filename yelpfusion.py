@@ -385,9 +385,6 @@ def main():
                                 # Save current progress to JSON
                                 with open('maryland_restaurants_progress.json', 'w') as f:
                                     json.dump(list(all_restaurants.values()), f)
-                                # Wait longer before continuing to next cell
-                                print("Waiting 60 seconds before continuing...")
-                                time.sleep(60)
                                 break
                             else:
                                 # For other errors, wait a bit and continue
