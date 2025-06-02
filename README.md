@@ -37,21 +37,21 @@ The script writes duplicate-free CSVs, checkpoints its own progress so you can s
 
 ```mermaid
 flowchart TD
-    A[Start] --> B[Load .env<br>Yelp API key]
+    A[Start] --> B[Load .env<br/>Yelp API key]
     B --> C{maryland_grid_cells.csv exists?}
-    C -- No --> D[Generate 10×10 grid<br>save CSV]
-    C -- Yes --> E[Load grid<br>with done flags]
+    C -- No --> D[Generate 10×10 grid<br/>save CSV]
+    C -- Yes --> E[Load grid<br/>with done flags]
     D --> F
     E --> F
-    F[Render grid<br>PNG/JPG] --> G[Load / init<br>maryland_restaurants.csv]
+    F[Render grid<br/>PNG/JPG] --> G[Load / init<br/>maryland_restaurants.csv]
     G --> H[Iterate over grid cells]
     H --> I{Cell marked done?}
     I -- Yes --> H
     I -- No --> J[Compute center & radius]
-    J --> K[Call /businesses/search<br>(paginated)]
-    K --> L[Call /businesses/{id}<br>full details]
-    L --> M[Append NEW rows<br>to CSV]
-    M --> N[Mark cell done<br>update CSV]
+    J --> K["Call /businesses/search<br/>(paginated)"]
+    K --> L["Call /businesses/:id<br/>full details"]
+    L --> M[Append NEW rows<br/>to CSV]
+    M --> N[Mark cell done<br/>update CSV]
     N --> H
     H -->|every 5 cells| P[Write progress JSON]
     H -->|after last cell| Q[Write final JSON backup]
