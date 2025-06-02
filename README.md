@@ -1,144 +1,164 @@
-# Maryland Restaurant Data Collection
+# YelpFusion — Maryland Restaurant Data Collector
 
-A Python utility that divides the state of Maryland into a 10 × 10 grid, then uses the Yelp Fusion API to discover every restaurant inside each cell.
-The script outputs clean, deduplicated CSV files, keeps track of progress so it can be resumed safely, and creates a map that shows the search grid.
+`yelpfusion.py` divides the State of Maryland into a 10 × 10 geographic grid and calls the **Yelp Fusion API** to catalogue every restaurant found in each cell.
+The script writes duplicate-free CSVs, checkpoints its own progress so you can stop and resume at any time, and generates a high-resolution PNG/JPG map of the grid with search radii overlaid.
 
 ---
 
 ## Table of Contents
 
 1. [Key Features](#key-features)
-2. [Quick Start](#quick-start)
-3. [Detailed Workflow](#detailed-workflow)
-4. [File Layout](#file-layout)
-5. [Configuration](#configuration)
-6. [Troubleshooting](#troubleshooting)
-7. [Contributing](#contributing)
-8. [License](#license)
+2. [Architecture & Data Flow](#architecture--data-flow)
+3. [Quick Start](#quick-start)
+4. [How It Works](#how-it-works)
+5. [Repository Layout](#repository-layout)
+6. [Configuration](#configuration)
+7. [Troubleshooting](#troubleshooting)
+8. [Contributing](#contributing)
+9. [License](#license)
 
 ---
 
 ## Key Features
 
-| Capability                  | Description                                                                                                  |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| **10 × 10 geographic grid** | Covers all of Maryland with cells \~20 km × 40 km.                                                           |
-| **Dynamic search radius**   | Calculates the minimum radius (capped at 40 km) needed to cover each cell.                                   |
-| **Robust data collection**  | Paginates through Yelp results, avoids duplicates, and appends new businesses to `maryland_restaurants.csv`. |
-| **Progress tracking**       | `maryland_grid_cells.csv` stores a `done` flag so interrupted runs can resume.                               |
-| **Rate-limit handling**     | Detects HTTP 429 responses, saves current work, and exits gracefully.                                        |
-| **Grid visualization**      | Generates `maryland_grid_visualization.png/.jpg`, including map tiles if `contextily` is installed.          |
-| **Automatic backups**       | Writes JSON snapshots every five cells and at program end.                                                   |
+| Capability                 | Details                                                                                                                   |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| **10 × 10 grid**           | Covers 100 % of Maryland with cells ≈ 20 km × 40 km each.                                                                 |
+| **Adaptive search radius** | Calculates the minimal radius (≤ 40 000 m, Yelp hard-limit) that encloses the cell’s diagonal plus a 20 % overlap margin. |
+| **Stateful scraping**      | `maryland_grid_cells.csv` stores a `done` flag per cell, so an interrupted run resumes where it left off.                 |
+| **Duplicate-free CSV**     | Each Yelp `business_id` is written exactly once, even if it appears in multiple cells.                                    |
+| **Rate-limit defence**     | Detects HTTP 429, persists everything gathered so far, marks the current cell **not** done, and exits cleanly.            |
+| **Cartographic output**    | Produces `maryland_grid_visualization.{png,jpg}` with OpenStreetMap tiles (via `contextily`).                             |
+| **Automatic backups**      | Writes JSON snapshots every five cells and again when the last cell finishes.                                             |
+
+---
+
+## Architecture & Data Flow
+
+```mermaid
+flowchart TD
+    A[Start] --> B[Load .env<br/>Yelp API key]
+    B --> C{maryland_grid_cells.csv exists?}
+    C -- No --> D[Generate 10×10 grid<br/>save CSV]
+    C -- Yes --> E[Load grid<br/>with done flags]
+    D --> F
+    E --> F
+    F[Render grid<br/>PNG/JPG] --> G[Load / init<br/>maryland_restaurants.csv]
+    G --> H[Iterate over grid cells]
+    H --> I{Cell marked done?}
+    I -- Yes --> H
+    I -- No --> J[Compute center & radius]
+    J --> K[Call /businesses/search<br/>(paginated)]
+    K --> L[Call /businesses/{id}<br/>full details]
+    L --> M[Append NEW rows<br/>to CSV]
+    M --> N[Mark cell done<br/>update CSV]
+    N --> H
+    H -->|every 5 cells| P[Write progress JSON]
+    H -->|after last cell| Q[Write final JSON backup]
+    Q --> R[Finish]
+```
 
 ---
 
 ## Quick Start
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/billy-enrizky/YelpFusion
+# 1 — Clone the repo
+git clone https://github.com/billy-enrizky/YelpFusion.git
 cd YelpFusion
 
-# 2. Create and activate a virtual environment (recommended)
+# 2 — (Recommended) create a virtual environment
 python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
-# 3. Install dependencies
+# 3 — Install dependencies
 pip install -r requirements.txt
 
-# 4. Add your Yelp API key to a .env file
-echo "YELP_API_KEY=YOUR_API_KEY_HERE" > .env
+# 4 — Provide your Yelp key (https://developer.yelp.com/)
+echo "YELP_API_KEY=YOUR_KEY_HERE" > .env
 
-# 5. Run the scraper
+# 5 — Run the scraper
 python yelpfusion.py
 ```
 
-> **Tip:** The script is idempotent. If it stops for any reason, just run it again; completed grid cells will be skipped.
+> **Tip:** The scraper is idempotent.
+> If the process stops (power loss, 429, etc.), just run it again—completed cells are skipped automatically.
 
 ---
 
-## Detailed Workflow
+## How It Works
 
-1. **Grid Creation**
-
-   * Computes latitude/longitude bounds for each cell.
-   * Stores metadata (corners, center point, search radius, completion status) in `maryland_grid_cells.csv`.
-
-2. **Visualization**
-
-   * Plots Maryland’s outline and every grid cell.
-   * Adds OpenStreetMap tiles with `contextily` for easy orientation.
-
-3. **Restaurant Search**
-
-   * For each incomplete cell:
-
-     * Calls the Yelp Fusion API with the pre-computed center point and radius.
-     * Loops through result pages (`limit=50`, `offset` up to 950).
-     * Fetches full business details for each ID, ensuring uniqueness across all cells.
-
-4. **Data Storage**
-
-   * Appends new rows to `maryland_restaurants.csv` with rich metadata: ratings, price tier, categories, address, coordinates, phone, and Yelp URL.
-   * Saves JSON backups (`maryland_restaurants_progress.json`, `maryland_restaurants_json_backup.json`) for redundancy.
-
-5. **Rate-Limit Protection**
-
-   * On a 429 error, writes everything collected so far, flags the current cell as **not** done, and exits so you can retry later.
+| Stage                   | Technical Notes                                                                                                                             |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Grid generation**     | Bounding box: lat 37.9171 → 39.72284, lon −79.4870 → −75.0506. Cell metadata (corners, centre, search radius) stored to CSV.                |
+| **Radius calculation**  | Half-height & half-width in metres (`Δφ · 111 000`, `Δλ · 111 000 · cos φ`); diagonal × 1.2; capped at 40 000 m.                            |
+| **API pagination**      | `/businesses/search` returns ≤ 50 rows; script increments `offset` (0, 50, 100, …) up to 1 000 rows per cell.                               |
+| **Deduplication**       | A `set` of known Yelp IDs is loaded at startup and updated in-memory before each CSV append.                                                |
+| **Rate-limit handling** | On HTTP 429: writes progress JSON, marks cell “no”, exits (`sys.exit(1)`).                                                                  |
+| **Mapping**             | If `contextily` + `geopandas` are present, EPSG:4326 tiles from OpenStreetMap Mapnik are added; otherwise a plain matplotlib grid is drawn. |
+| **Checkpoint cadence**  | `maryland_restaurants_progress.json` every 5 cells; `maryland_restaurants_json_backup.json` at completion.                                  |
 
 ---
 
-## File Layout
+## Repository Layout
 
-| Path                              | Purpose                                                     |
-| --------------------------------- | ----------------------------------------------------------- |
-| `maryland_restaurant_scraper.py`  | Main script (shown above).                                  |
-| `requirements.txt`                | Pinned Python dependencies.                                 |
-| `maryland_grid_cells.csv`         | Grid definition and progress log.                           |
-| `maryland_restaurants.csv`        | Master table of all restaurants collected.                  |
-| `maryland_grid_visualization.png` | High-resolution map of the grid (also saved as `.jpg`).     |
-| `*_backup.json`                   | Incremental or final JSON backups of Yelp business objects. |
+| Path                                   | Purpose                                                 |
+| -------------------------------------- | ------------------------------------------------------- |
+| `yelpfusion.py`                        | Main orchestration script (grid, scrape, visualise).    |
+| `requirements.txt`                     | Version-pinned Python dependencies.                     |
+| `maryland_grid_cells.csv`              | Grid definition + `done` status (generated at runtime). |
+| `maryland_restaurants.csv`             | Master list of deduplicated restaurants (generated).    |
+| `maryland_grid_visualization.png/.jpg` | High-resolution map of the search grid (generated).     |
+| `*_progress.json`, `*_backup.json`     | Incremental / final Yelp snapshots (generated).         |
 
 ---
 
 ## Configuration
 
-### Environment Variables
+### Mandatory environment variable
 
-| Variable       | Description                                                                                                              |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `YELP_API_KEY` | **Required.** Your personal Yelp Fusion API key. See Yelp’s [Manage App](https://www.yelp.com/developers/v3/manage_app). |
+| Variable       | Description                                          |
+| -------------- | ---------------------------------------------------- |
+| `YELP_API_KEY` | Your personal Yelp Fusion API key (store in `.env`). |
 
-### Optional Parameters
+### Optional constants (edit near the top of **`yelpfusion.py`**)
 
-Edit the constants near the top of `maryland_restaurant_scraper.py` if you need to:
-
-| Constant                | Default                 | Meaning                                        |
-| ----------------------- | ----------------------- | ---------------------------------------------- |
-| `GRID_ROWS / GRID_COLS` | `10 / 10`               | Number of grid divisions (≈ 20 × 40 km cells). |
-| `MD_*`                  | Maryland lat/lon bounds | Geographic boundaries.                         |
-| `timeout_s`             | `5.0`                   | Yelp API client timeout (seconds).             |
+| Constant                         | Default                    | Meaning                                |
+| -------------------------------- | -------------------------- | -------------------------------------- |
+| `GRID_ROWS / GRID_COLS`          | `10 / 10`                  | Grid granularity.                      |
+| `MD_NORTH / SOUTH / EAST / WEST` | Hard-coded Maryland bounds | Change these to scrape another region. |
+| `timeout_s`                      | `5.0`                      | Yelp client timeout (seconds).         |
 
 ---
 
 ## Troubleshooting
 
-| Symptom                                                 | Likely Cause                           | Fix                                                                           |
-| ------------------------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------- |
-| **Script exits with “429 Too Many Requests.”**          | Yelp daily quota or QPS limit reached. | Wait for quota reset, then rerun. The grid will pick up where it left off.    |
-| **“contextily not found” warning and plain map image.** | Optional mapping libraries missing.    | `pip install contextily geopandas` for a tiled background map.                |
-| **Duplicate businesses appear.**                        | Old CSV modified manually.             | Do not edit `maryland_restaurants.csv` by hand, or remove it and start fresh. |
+| Symptom                   | Likely Cause                                | Fix                                                             |
+| ------------------------- | ------------------------------------------- | --------------------------------------------------------------- |
+| **401 Unauthorized**      | `YELP_API_KEY` missing or invalid.          | Verify key in `.env`.                                           |
+| **429 Too Many Requests** | Daily quota or QPS exceeded.                | Wait for quota reset (midnight UTC) and rerun; scraper resumes. |
+| **No map tiles**          | `contextily`/`geopandas` not installed.     | `pip install contextily geopandas`.                             |
+| **Duplicate rows**        | Manual edits to `maryland_restaurants.csv`. | Remove duplicates or regenerate the CSV.                        |
+
+---
+
+## Contributing
+
+1. Open an **Issue** describing the bug or feature.
+2. Fork & create a branch: `git checkout -b feature/your-idea`.
+3. Format code with **black** and run **flake8**.
+4. Submit a concise, well-scoped **Pull Request**.
 
 ---
 
 ## License
 
-This project is licensed under the MIT License.
-Use of the Yelp Fusion API is subject to Yelp’s terms of service and display requirements.
+Released under the **MIT License**.
+Use of the Yelp Fusion API is governed by Yelp’s Developer Terms.
 
 ---
 
 ### Acknowledgements
 
-* Yelp Fusion API team for free restaurant data.
-* OpenStreetMap contributors for map tiles displayed via `contextily`.
+* **Yelp Fusion API** for public restaurant data.
+* **OpenStreetMap** contributors for map tiles served via `contextily`.
