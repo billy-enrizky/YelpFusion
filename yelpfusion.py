@@ -289,8 +289,8 @@ def main():
     grid_cells = grid_df.to_dict('records')
     
     # Visualize the grid
-    print("Visualizing Maryland grid...")
-    visualize_grid(grid_cells)
+    #print("Visualizing Maryland grid...")
+    #visualize_grid(grid_cells)
     
     all_restaurants = {}  # Using dict to ensure unique entries
     yelp_api = YelpAPI(api_key, timeout_s=5.0)
@@ -385,7 +385,7 @@ def main():
                                 # Save current progress to JSON
                                 with open('maryland_restaurants_progress.json', 'w') as f:
                                     json.dump(list(all_restaurants.values()), f)
-                                break
+                                exit(1)
                             else:
                                 # For other errors, wait a bit and continue
                                 time.sleep(2)
