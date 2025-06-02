@@ -4,7 +4,6 @@ import json
 import math
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from dotenv import load_dotenv
 from yelpapi import YelpAPI
@@ -201,19 +200,60 @@ def calculate_search_radius(lat, lng, cell_height, cell_width):
     # Yelp API maximum radius is 40000 meters
     return min(int(radius), 40000)
 
-# Function to append restaurant data to CSV
-def append_to_restaurants_csv(restaurants, cell_id):
+# Function to load existing grid status
+def load_grid_status():
+    """Load the grid status from CSV, or create a new file if it doesn't exist"""
+    try:
+        if os.path.isfile('maryland_grid_cells.csv'):
+            grid_df = pd.read_csv('maryland_grid_cells.csv')
+            print(f"Loaded grid status: {len(grid_df)} cells, {len(grid_df[grid_df['done'] == 'yes'])} completed")
+            return grid_df
+        else:
+            print("No existing grid file found. Will create a new one.")
+            return generate_grid_coordinates()
+    except Exception as e:
+        print(f"Error loading grid status: {str(e)}. Generating new grid.")
+        return generate_grid_coordinates()
+
+# Function to load existing restaurants
+def load_existing_restaurants():
+    """Load existing restaurants from CSV to avoid duplicates"""
+    try:
+        if os.path.isfile('maryland_restaurants.csv'):
+            restaurants_df = pd.read_csv('maryland_restaurants.csv')
+            print(f"Loaded {len(restaurants_df)} existing restaurants")
+            
+            # Create a dictionary of restaurants by ID for fast lookup
+            restaurant_ids = set(restaurants_df['id'].unique())
+            return restaurant_ids
+        else:
+            print("No existing restaurants file found")
+            return set()
+    except Exception as e:
+        print(f"Error loading restaurants: {str(e)}")
+        return set()
+
+# Function to append restaurant data to CSV, checking for duplicates
+def append_to_restaurants_csv(restaurants, cell_id, existing_restaurant_ids):
+    """Append restaurants to CSV, skipping duplicates"""
+    # Filter out restaurants that already exist
+    new_restaurants = [r for r in restaurants if r['id'] not in existing_restaurant_ids]
+    
+    if not new_restaurants:
+        print(f"No new restaurants to add from cell {cell_id}")
+        return 0
+    
     # Convert restaurant data to DataFrame rows
     rows = []
-    for r in restaurants:
+    for r in new_restaurants:
         rows.append({
-            'cell_id': cell_id,  # Add cell_id to track where each restaurant was found
+            'cell_id': cell_id,
             'id': r['id'],
             'name': r['name'],
             'rating': r.get('rating'),
             'review_count': r.get('review_count'),
             'price': r.get('price', ''),
-            'categories': str([c['title'] for c in r.get('categories', [])]),  # Convert list to string for CSV
+            'categories': str([c['title'] for c in r.get('categories', [])]),
             'address': ', '.join(r.get('location', {}).get('display_address', [])),
             'city': r.get('location', {}).get('city', ''),
             'state': r.get('location', {}).get('state', ''),
@@ -223,6 +263,9 @@ def append_to_restaurants_csv(restaurants, cell_id):
             'phone': r.get('phone', ''),
             'url': r.get('url', '')
         })
+        
+        # Add to the existing IDs set to avoid duplicates within this batch
+        existing_restaurant_ids.add(r['id'])
     
     # Create DataFrame from rows
     df = pd.DataFrame(rows)
@@ -233,143 +276,163 @@ def append_to_restaurants_csv(restaurants, cell_id):
     # Append data to CSV (create file if it doesn't exist)
     df.to_csv('maryland_restaurants.csv', mode='a', header=not file_exists, index=False)
     
-    print(f"Appended {len(rows)} restaurants from cell {cell_id} to maryland_restaurants.csv")
+    print(f"Appended {len(rows)} new restaurants from cell {cell_id} to maryland_restaurants.csv")
+    return len(rows)
 
-# Initialize data collection
-print("Generating and visualizing Maryland grid...")
-grid_cells = generate_grid_coordinates()
-visualize_grid(grid_cells)
-
-# Remove this line if you want to proceed with data collection
-# exit(0)  # Exit after generating grid
-
-all_restaurants = {}  # Using dict to ensure unique entries
-yelp_api = YelpAPI(api_key, timeout_s=5.0)
-
-print(f"Starting search across Maryland using a {GRID_ROWS}×{GRID_COLS} grid")
-cell_count = 0
-
-try:
-    # Process each cell in the grid
-    for i in range(GRID_ROWS):
-        for j in range(GRID_COLS):
-            cell_id = f"{i}_{j}"
-            cell_count += 1
-            
-            print(f"\nProcessing cell {cell_count}/{GRID_ROWS*GRID_COLS}: {cell_id}")
-            
-            # Calculate cell center coordinates
-            lat = MD_SOUTH + (i + 0.5) * cell_height
-            lng = MD_WEST + (j + 0.5) * cell_width
-            
-            # Calculate appropriate search radius
-            radius = calculate_search_radius(lat, lng, cell_height, cell_width)
-            
-            print(f"Searching at {lat:.4f}, {lng:.4f} with radius {radius}m")
-            
-            offset = 0
-            total_found = 0
-            cell_restaurants = []  # Store restaurants found in this cell
-            
-            # Search for restaurants with improved error handling
-            try:
-                # Use pagination to get all results for this cell
-                while True:
-                    try:
-                        # Search for restaurants
-                        search_results = yelp_api.search_query(
-                            term="restaurant",
-                            latitude=lat,
-                            longitude=lng,
-                            radius=radius,
-                            limit=50,  # Max results per query
-                            offset=offset,
-                            categories="restaurants",
-                            sort_by="distance"
-                        )
-                        
-                        # Process results
-                        if 'businesses' in search_results and search_results['businesses']:
-                            businesses = search_results['businesses']
-                            total_found += len(businesses)
+# Main execution function
+def main():
+    # Load existing data
+    grid_df = load_grid_status()
+    existing_restaurant_ids = load_existing_restaurants()
+    
+    # Create grid cells object for visualization
+    grid_cells = grid_df.to_dict('records')
+    
+    # Visualize the grid
+    print("Visualizing Maryland grid...")
+    visualize_grid(grid_cells)
+    
+    all_restaurants = {}  # Using dict to ensure unique entries
+    yelp_api = YelpAPI(api_key, timeout_s=5.0)
+    
+    print(f"Starting search across Maryland using a {GRID_ROWS}×{GRID_COLS} grid")
+    cell_count = 0
+    
+    try:
+        # Process each cell in the grid
+        for i in range(GRID_ROWS):
+            for j in range(GRID_COLS):
+                cell_id = f"{i}_{j}"
+                cell_count += 1
+                
+                # Check if this cell is already done
+                if grid_df.loc[grid_df['cell_id'] == cell_id, 'done'].iloc[0] == 'yes':
+                    print(f"\nSkipping completed cell {cell_count}/{GRID_ROWS*GRID_COLS}: {cell_id}")
+                    continue
+                
+                print(f"\nProcessing cell {cell_count}/{GRID_ROWS*GRID_COLS}: {cell_id}")
+                
+                # Calculate cell center coordinates
+                lat = MD_SOUTH + (i + 0.5) * cell_height
+                lng = MD_WEST + (j + 0.5) * cell_width
+                
+                # Calculate appropriate search radius
+                radius = calculate_search_radius(lat, lng, cell_height, cell_width)
+                
+                print(f"Searching at {lat:.4f}, {lng:.4f} with radius {radius}m")
+                
+                offset = 0
+                total_found = 0
+                cell_restaurants = []  # Store restaurants found in this cell
+                
+                # Search for restaurants with improved error handling
+                try:
+                    # Use pagination to get all results for this cell
+                    while True:
+                        try:
+                            # Search for restaurants
+                            search_results = yelp_api.search_query(
+                                term="restaurant",
+                                latitude=lat,
+                                longitude=lng,
+                                radius=radius,
+                                limit=50,  # Max results per query
+                                offset=offset,
+                                categories="restaurants",
+                                sort_by="distance"
+                            )
                             
-                            # Get detailed info for each business
-                            for business in businesses:
-                                business_id = business['id']
-                                if business_id not in all_restaurants:
-                                    try:
-                                        # Get full business details
-                                        business_details = yelp_api.business_query(id=business_id)
-                                        all_restaurants[business_id] = business_details
-                                        cell_restaurants.append(business_details)
-                                        time.sleep(0.2)  # Respect rate limits
-                                    except Exception as e:
-                                        print(f"Error getting details for {business['name']}: {str(e)}")
-                            
-                            # Check if we need to paginate (max 1000 results per search)
-                            if len(businesses) < 50 or offset > 950:
+                            # Process results
+                            if 'businesses' in search_results and search_results['businesses']:
+                                businesses = search_results['businesses']
+                                total_found += len(businesses)
+                                
+                                # Get detailed info for each business
+                                for business in businesses:
+                                    business_id = business['id']
+                                    if business_id not in all_restaurants and business_id not in existing_restaurant_ids:
+                                        try:
+                                            # Get full business details
+                                            business_details = yelp_api.business_query(id=business_id)
+                                            all_restaurants[business_id] = business_details
+                                            cell_restaurants.append(business_details)
+                                            time.sleep(0.2)  # Respect rate limits
+                                        except Exception as e:
+                                            print(f"Error getting details for {business['name']}: {str(e)}")
+                                
+                                # Check if we need to paginate (max 1000 results per search)
+                                if len(businesses) < 50 or offset > 950:
+                                    break
+                                
+                                # Next page
+                                offset += 50
+                                time.sleep(0.5)
+                            else:
                                 break
+                                
+                        except Exception as e:
+                            error_msg = str(e)
+                            print(f"Error in search: {error_msg}")
                             
-                            # Next page
-                            offset += 50
-                            time.sleep(0.5)
-                        else:
-                            break
-                            
-                    except Exception as e:
-                        error_msg = str(e)
-                        print(f"Error in search: {error_msg}")
-                        
-                        # Specific handling for 429 Too Many Requests error
-                        if "429 Client Error: Too Many Requests" in error_msg:
-                            print(f"Rate limit exceeded for cell {cell_id}. Marking as incomplete.")
-                            # Save whatever data we've collected from this cell
-                            if cell_restaurants:
-                                append_to_restaurants_csv(cell_restaurants, cell_id)
-                            # Mark this cell as not done
-                            update_grid_status(cell_id, 'no')
-                            # Save current progress to JSON
-                            with open('maryland_restaurants_progress.json', 'w') as f:
-                                json.dump(list(all_restaurants.values()), f)
-                            break
-                        else:
-                            # For other errors, wait a bit and continue
-                            time.sleep(2)
-                            break
+                            # Specific handling for 429 Too Many Requests error
+                            if "429 Client Error: Too Many Requests" in error_msg:
+                                print(f"Rate limit exceeded for cell {cell_id}. Marking as incomplete.")
+                                # Save whatever data we've collected from this cell
+                                if cell_restaurants:
+                                    append_to_restaurants_csv(cell_restaurants, cell_id, existing_restaurant_ids)
+                                # Mark this cell as not done
+                                update_grid_status(cell_id, 'no')
+                                # Save current progress to JSON
+                                with open('maryland_restaurants_progress.json', 'w') as f:
+                                    json.dump(list(all_restaurants.values()), f)
+                                # Wait longer before continuing to next cell
+                                print("Waiting 60 seconds before continuing...")
+                                time.sleep(60)
+                                break
+                            else:
+                                # For other errors, wait a bit and continue
+                                time.sleep(2)
+                                break
+                    
+                    # Append this cell's restaurants to the main CSV file
+                    if cell_restaurants:
+                        new_count = append_to_restaurants_csv(cell_restaurants, cell_id, existing_restaurant_ids)
+                        print(f"Added {new_count} new unique restaurants from this cell")
+                    
+                    # Mark this cell as done
+                    update_grid_status(cell_id, 'yes')
+                    
+                    print(f"Found {total_found} restaurants in cell {cell_id} ({len(cell_restaurants)} unique in this cell)")
+                    
+                except Exception as e:
+                    print(f"Error processing cell {cell_id}: {str(e)}")
+                    # If there was an error, mark as not done
+                    update_grid_status(cell_id, 'no')
                 
-                # Append this cell's restaurants to the main CSV file
-                if cell_restaurants:
-                    append_to_restaurants_csv(cell_restaurants, cell_id)
+                # Save progress periodically to JSON (backup)
+                if cell_count % 5 == 0:
+                    with open('maryland_restaurants_progress.json', 'w') as f:
+                        json.dump(list(all_restaurants.values()), f)
                 
-                # Mark this cell as done
-                update_grid_status(cell_id, 'yes')
-                
-                print(f"Found {total_found} restaurants in cell {cell_id} ({len(all_restaurants)} unique total)")
-                
-            except Exception as e:
-                print(f"Error processing cell {cell_id}: {str(e)}")
-                # If there was an error, mark as not done
-                update_grid_status(cell_id, 'no')
-            
-            # Save progress periodically to JSON (backup)
-            if cell_count % 5 == 0:
-                with open('maryland_restaurants_progress.json', 'w') as f:
-                    json.dump(list(all_restaurants.values()), f)
-            
-            time.sleep(1)  # Brief pause between cells
-    
-    # Save final results as JSON (backup)
-    restaurant_list = list(all_restaurants.values())
-    with open('maryland_restaurants.json', 'w') as f:
-        json.dump(restaurant_list, f)
-    
-    print(f"\nSearch complete! Found {len(restaurant_list)} unique restaurants in Maryland.")
-    print("All data has been saved to maryland_restaurants.csv")
-    print("Grid cell statuses have been updated in maryland_grid_cells.csv")
-    
-except Exception as e:
-    print(f"An error occurred: {str(e)}")
-    # Save whatever data we've collected so far
-    if all_restaurants:
-        with open('maryland_restaurants_emergency_save.json', 'w') as f:
-            json.dump(list(all_restaurants.values()), f)
+                time.sleep(1)  # Brief pause between cells
+        
+        # Save final results as JSON (backup)
+        restaurant_list = list(all_restaurants.values())
+        with open('maryland_restaurants_json_backup.json', 'w') as f:
+            json.dump(restaurant_list, f)
+        
+        print(f"\nSearch complete! Found {len(restaurant_list)} new unique restaurants in Maryland.")
+        print(f"Total restaurants in database: {len(existing_restaurant_ids) + len(restaurant_list)}")
+        print("All data has been saved to maryland_restaurants.csv")
+        print("Grid cell statuses have been updated in maryland_grid_cells.csv")
+        
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+        # Save whatever data we've collected so far
+        if all_restaurants:
+            with open('maryland_restaurants_emergency_save.json', 'w') as f:
+                json.dump(list(all_restaurants.values()), f)
+
+# Call the main function to start execution
+if __name__ == "__main__":
+    main()
