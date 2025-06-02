@@ -289,8 +289,8 @@ def main():
     grid_cells = grid_df.to_dict('records')
     
     # Visualize the grid
-    #print("Visualizing Maryland grid...")
-    #visualize_grid(grid_cells)
+    print("Visualizing Maryland grid...")
+    visualize_grid(grid_cells)
     
     all_restaurants = {}  # Using dict to ensure unique entries
     yelp_api = YelpAPI(api_key, timeout_s=5.0)
